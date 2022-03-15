@@ -1,0 +1,165 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: Deploys a State Machine would call ssm command command
+
+Parameters:
+  AmiId:
+    Type: AWS::EC2::Image::Id
+    Description: AMI Id for EC2
+    Default: ami-0d5eff06f840b45e9
+  VPC:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC id 
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet::Id
+    Description: private subnet ID for EC2
+  
+
+Resources:
+
+  StatesExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub "states.${AWS::Region}.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+
+  StatesExecutionPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: StatesExecutionPolicy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: "ssm:SendCommand"
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:CreateLogDelivery
+              - logs:GetLogDelivery
+              - logs:UpdateLogDelivery
+              - logs:DeleteLogDelivery
+              - logs:ListLogDeliveries
+              - logs:PutResourcePolicy
+              - logs:DescribeResourcePolicies
+              - logs:DescribeLogGroups
+            Resource: "*" 
+      Roles:
+        - !Ref StatesExecutionRole
+
+  StateMachineLog:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/stepfunction/StateMachineRunSendCommand
+      RetentionInDays: 7
+
+  UpdateEc2StateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      RoleArn: !GetAtt StatesExecutionRole.Arn
+      LoggingConfiguration:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+             LogGroupArn: !GetAtt StateMachineLog.Arn
+        IncludeExecutionData: True
+        Level: ALL
+      DefinitionString: !Sub 
+        - |-
+          {
+            "Comment": "Run SSM SendCommand to EC2 to execute SSM Command document",
+            "StartAt": "SendCommand",
+            "States": {
+              "SendCommand": {
+                "Type": "Task",
+                "End": true,
+                "Parameters": {
+                  "Targets": [
+                    {
+                      "Key": "tag:Name",
+                      "Values": ["RunCommandDoc"]
+                    }
+                  ],
+                  "DocumentName": "${ssmCommandDoc}",
+                  "Parameters": {
+                    "Message": [
+                      "sample value for parameter"
+                    ]
+                  }
+                },
+                "Resource": "arn:aws:states:::aws-sdk:ssm:sendCommand"
+              }
+            }
+          }
+        - {ssmCommandDoc: !Ref SSMCommandDoc }
+
+
+  SSMCommandDoc:
+    Type: AWS::SSM::Document
+    Properties:
+      Content: 
+        schemaVersion: "2.2"
+        description: "sample command doc to run shell scripts on EC2"
+        parameters:
+          Message:
+            type: String
+            description: sample parameter
+        mainSteps:
+          - action: "aws:runShellScript"
+            name: "runshellscriptForEc2"
+            inputs:
+              runCommand:
+                - echo "Passing parameter value is - " {{Message}}
+                - aws sts get-caller-identity
+                - printenv
+      DocumentFormat: "YAML"
+      DocumentType: "Command"
+      # Name: "sampleCommandDoc"
+      Tags:
+        - Key: Team
+          Value: runCommand 
+
+  EC2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2InstanceRole
+      Path: /
+
+  SampleEC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      ImageId: !Ref AmiId
+      InstanceType: t3.nano
+      # SecurityGroupIds:
+      #   - Fn::GetAtt: [!Ref VPC, "DefaultSecurityGroup" ]
+      SubnetId: !Ref PrivateSubnet
+      Tags:
+        - Key: Name
+          Value: RunCommandDoc
