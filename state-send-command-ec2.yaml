@@ -37,7 +37,10 @@ Resources:
         Version: 2012-10-17
         Statement:
           - Effect: Allow
-            Action: "ssm:SendCommand"
+            Action: 
+              - "ssm:SendCommand"
+              - "ssm:GetCommandInvocation"
+              - "ssm:GetDocument"
             Resource: "*"
           - Effect: Allow
             Action:
@@ -80,13 +83,10 @@ Resources:
             "States": {
               "SendCommand": {
                 "Type": "Task",
-                "End": true,
+                "Resource": "arn:aws:states:::aws-sdk:ssm:sendCommand",
                 "Parameters": {
-                  "Targets": [
-                    {
-                      "Key": "tag:Name",
-                      "Values": ["RunCommandDoc"]
-                    }
+                  "InstanceIds": [
+                    "${TargetInstanceId}"
                   ],
                   "DocumentName": "${ssmCommandDoc}",
                   "Parameters": {
@@ -95,11 +95,61 @@ Resources:
                     ]
                   }
                 },
-                "Resource": "arn:aws:states:::aws-sdk:ssm:sendCommand"
+                "ResultSelector": {
+                  "CommandId.$": "$.Command.CommandId",
+                  "InstanceId.$": "$.Command.InstanceIds[0]"
+                },
+                "ResultPath": "$.output1",
+                "OutputPath": "$.output1",
+                "Next": "GetCommandInvocation"
+              },
+              "GetCommandInvocation": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:ssm:getCommandInvocation",
+                "Parameters": {
+                  "CommandId.$": "$.CommandId",
+                  "InstanceId.$": "$.InstanceId"
+                },
+                "ResultPath": "$.Command",
+                "OutputPath": "$.Command",
+                "Next": "CheckCommandStatus"
+              },
+              "CheckCommandStatus": {
+                "Type": "Choice",
+                 "Choices": [
+                  {
+                    "Variable": "$.Status",
+                    "StringEquals": "Success",
+                    "Next": "DoneStep"
+                  },
+                  {
+                    "Or":[
+                      {
+                        "Variable": "$.Status",
+                        "StringEquals": "Failed"
+                      }
+                    ],
+                    "Next": "Fail"
+                  }
+                ],
+                "Default": "WaitForResult"
+              },
+              "WaitForResult": {
+                "Type": "Wait",
+                "Seconds": 10,
+                "Next": "GetCommandInvocation"
+              },
+              "DoneStep": {
+                "Type": "Succeed"
+              },
+              "Fail": {
+                "Type": "Fail",
+                "Cause": "SSM Command document invocation failed"
               }
             }
           }
-        - {ssmCommandDoc: !Ref SSMCommandDoc }
+        - TargetInstanceId: !Ref SampleEC2Instance 
+          ssmCommandDoc: !Ref SSMCommandDoc
 
 
   SSMCommandDoc:
